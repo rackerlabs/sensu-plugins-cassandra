@@ -75,7 +75,7 @@ UNITS_FACTOR = {
   'MB' => 1024**2,
   'GB' => 1024**3,
   'TB' => 1024**4
-}.freeze
+}
 
 #
 # Cassandra Metrics
@@ -136,6 +136,14 @@ class CassandraMetrics < Sensu::Plugin::Metric::CLI::Graphite
          long: '--[no-]cfstats',
          boolean: true,
          default: false
+
+  option :status,
+         description: 'Check if other nodes are accesible for this node via "status" metrics (default: yes)',
+         on: :tail,
+         short: '-z',
+         long: '--[no-]status',
+         boolean: true,
+         default: true
 
   # convert_to_bytes(512, 'KB') => 524288
   # convert_to_bytes(1, 'MB') => 1048576
@@ -220,6 +228,18 @@ class CassandraMetrics < Sensu::Plugin::Metric::CLI::Graphite
         output "#{config[:scheme]}.row_cache.hits", m[3], @timestamp
         output "#{config[:scheme]}.row_cache.requests", m[4], @timestamp
       end
+
+      if m = line.match(/^Gossip active[^:]+:\s(.+)/)# rubocop:disable all
+        output "#{config[:scheme]}.gossip_status", m[1], @timestamp
+      end
+
+      if m = line.match(/^Thrift active[^:]+:\s(.+)/)# rubocop:disable all
+        output "#{config[:scheme]}.thrift_status", m[1], @timestamp
+      end
+
+      if m = line.match(/^Native Transport active:\s(.+)/)# rubocop:disable all
+        output "#{config[:scheme]}.nativetransport_status", m[1], @timestamp
+      end
     end
   end
 
@@ -250,8 +270,8 @@ class CassandraMetrics < Sensu::Plugin::Metric::CLI::Graphite
   def parse_tpstats# rubocop:disable all
     tpstats = nodetool_cmd('tpstats')
     tpstats.each_line do |line|
-      next if line =~ /^Pool Name/
-      next if line =~ /^Message type/
+      next if line.match(/^Pool Name/)
+      next if line.match(/^Message type/)
 
       if m = line.match(/^(\w+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$/)# rubocop:disable all
         (thread, active, pending, completed, blocked) = m.captures
@@ -322,7 +342,7 @@ class CassandraMetrics < Sensu::Plugin::Metric::CLI::Graphite
     def get_metric(string) # rubocop:disable NestedMethodDefinition
       string.strip!
       (metric, value) = string.split(': ')
-      if metric.nil? || value.nil? # rubocop:disable Style/GuardClause
+      if metric.nil? || value.nil?
         return [nil, nil]
       else
         # sanitize metric names for graphite
@@ -368,6 +388,31 @@ class CassandraMetrics < Sensu::Plugin::Metric::CLI::Graphite
     end
   end
 
+
+# $ nodetool status
+# Datacenter: LON5
+# ================
+# Status=Up/Down
+# |/ State=Normal/Leaving/Joining/Moving
+# --  Address      Load       Tokens       Owns    Host ID                               Rack
+# UN  172.16.1.1  1.88 GB    256          ?       5uu5274d-0c1c-46f1-b73c-c28ffdcad10e  A12-5
+# DN  172.16.1.2  2.55 GB    256          ?       4uu6478c-0e29-468c-ad38-f417ccbcf403  A12-5
+# UL  172.16.1.3  3.24 GB    256          ?       fuu0063d-a033-4a78-95e8-40a479d99a6b  A12-5
+# UJ  172.16.1.4  4.92 GB    256          ?       1uuace8e-af9c-4eff-9977-1a34c09c5535  A12-5
+# UN  172.16.1.5  5.22 GB    256          ?       7uu9ee6c-f093-4fa0-874b-3f5bcaa5b952  A12-5
+
+  def parse_status# rubocop:disable all
+    nodestatus = nodetool_cmd('status')
+    nodestatus.each_line do |line|
+
+      if m = line.match(/^(\w+)\s\s(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/)# rubocop:disable all
+        (status,address) = m.captures
+        output "#{config[:scheme]}.node.#{address}.status", status, @timestamp
+      end
+
+    end
+  end
+
   def run# rubocop:disable all
     @timestamp = Time.now.to_i
 
@@ -375,6 +420,7 @@ class CassandraMetrics < Sensu::Plugin::Metric::CLI::Graphite
     parse_compactionstats if config[:compactionstats]
     parse_tpstats if config[:tpstats]
     parse_cfstats if config[:cfstats]
+    parse_status if config[:status]
 
     ok
   end
